@@ -22,6 +22,7 @@ type Config struct {
 	DataDir           string
 	WebhookToken      string
 	WebhookListenPort string
+	WebhookListenAddr string
 	TunnelListenAddr  string
 	mu                sync.RWMutex
 }
@@ -149,7 +150,8 @@ func main() {
 
 	sourceListenAddr := parseConfigEnv("SRC_LISTEN_ADDR", "0.0.0.0")
 
-	webhookListener := parseConfigEnv("WEBHOOK_LISTEN_PORT", "8081")
+	webhookPort := parseConfigEnv("WEBHOOK_LISTEN_PORT", "8081")
+	webhookAddr := parseConfigEnv("WEBHOOK_LISTEN_ADDR", "0.0.0.0")
 
 	dataPath := "data" // Name of the data directory
 
@@ -161,7 +163,8 @@ func main() {
 		WebhookToken:      token,
 		DataDir:           filepath.Join(".", dataPath),
 		FilePath:          filepath.Join(dataPath, "ipv6_address.txt"),
-		WebhookListenPort: webhookListener,
+		WebhookListenPort: webhookPort,
+		WebhookListenAddr: webhookAddr,
 		TunnelListenAddr:  sourceListenAddr,
 	}
 
@@ -173,8 +176,9 @@ func main() {
 	// Start the HTTP server to listen for webhook updates.
 	http.HandleFunc("/update", updateIPv6Address(config))
 	go func() {
-		log.Printf("Starting webhook server on %s\n", config.WebhookListenPort)
-		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", config.WebhookListenPort), nil))
+		fullAddr := fmt.Sprintf("%s:%s", config.WebhookListenAddr, config.WebhookListenPort)
+		log.Printf("Starting webhook server on %s\n", fullAddr)
+		log.Fatal(http.ListenAndServe(fullAddr, nil))
 	}()
 
 	for i, port := range config.IPv4Ports {

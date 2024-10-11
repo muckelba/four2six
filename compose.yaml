@@ -1,6 +1,6 @@
 services:
   four2six:
-    image: ghcr.io/muckelba/four2six:latest
+    image: ghcr.io/muckelba/four2six:main
     restart: unless-stopped
     networks:
       - default
