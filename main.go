@@ -138,13 +138,13 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 }
 
 // checkTunnel checks if a connection to the IPv6 address and port is possible.
-func checkTunnel(ipv6Addr, port string) bool {
+func checkTunnel(ipv6Addr, port string) (bool, error) {
 	conn, err := net.DialTimeout("tcp6", fmt.Sprintf("[%s]:%s", ipv6Addr, port), 2*1e9) // 2 seconds timeout
 	if err != nil {
-		return false
+		return false, err
 	}
 	conn.Close()
-	return true
+	return true, nil
 }
 
 // healthCheckHandler provides a health check for all open tunnels.
@@ -158,7 +158,7 @@ func healthCheckHandler(config *Config) http.HandlerFunc {
 
 		for i, ipv4Port := range config.IPv4Ports {
 			ipv6Port := config.IPv6Ports[i]
-			ipv6Alive := checkTunnel(config.IPv6Address, ipv6Port)
+			ipv6Alive, err := checkTunnel(config.IPv6Address, ipv6Port)
 			status := TunnelStatus{
 				IPv4Port:  ipv4Port,
 				IPv6Port:  ipv6Port,
@@ -168,6 +168,7 @@ func healthCheckHandler(config *Config) http.HandlerFunc {
 
 			if !ipv6Alive {
 				allHealthy = false
+				log.Printf("Healthcheck failed for port %v! %v", ipv6Port, err)
 			}
 		}
 
