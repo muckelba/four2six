@@ -27,12 +27,18 @@ type Config struct {
 	mu                sync.RWMutex
 }
 
+// TunnelStatus represents the status of a tunnel.
+type TunnelStatus struct {
+	IPv4Port  string `json:"ipv4_port"`
+	IPv6Port  string `json:"ipv6_port"`
+	IPv6Alive bool   `json:"ipv6_alive"`
+}
+
 func parseConfigEnv(envVar string, defaultValue string) string {
 	env := os.Getenv(envVar)
 	if env == "" {
 		env = defaultValue // Default if not set
 	}
-
 	return env
 }
 
@@ -67,7 +73,6 @@ func (config *Config) saveIPv6Address() error {
 
 // loadIPv6Address loads the IPv6 address from a file.
 func (config *Config) loadIPv6Address() error {
-
 	// Create a data/ dir if it's not existing to store the txt file
 	err := os.MkdirAll(config.DataDir, os.ModePerm)
 	if err != nil {
@@ -132,6 +137,52 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 	}
 }
 
+// checkTunnel checks if a connection to the IPv6 address and port is possible.
+func checkTunnel(ipv6Addr, port string) bool {
+	conn, err := net.DialTimeout("tcp6", fmt.Sprintf("[%s]:%s", ipv6Addr, port), 2*1e9) // 2 seconds timeout
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// healthCheckHandler provides a health check for all open tunnels.
+func healthCheckHandler(config *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		config.mu.RLock()
+		defer config.mu.RUnlock()
+
+		var statuses []TunnelStatus
+		allHealthy := true
+
+		for i, ipv4Port := range config.IPv4Ports {
+			ipv6Port := config.IPv6Ports[i]
+			ipv6Alive := checkTunnel(config.IPv6Address, ipv6Port)
+			status := TunnelStatus{
+				IPv4Port:  ipv4Port,
+				IPv6Port:  ipv6Port,
+				IPv6Alive: ipv6Alive,
+			}
+			statuses = append(statuses, status)
+
+			if !ipv6Alive {
+				allHealthy = false
+			}
+		}
+
+		if allHealthy {
+			w.WriteHeader(http.StatusOK) // HTTP 200 if all tunnels are healthy
+		} else {
+			w.WriteHeader(http.StatusInternalServerError) // HTTP 500 if any tunnel is down
+		}
+
+		// Respond with JSON containing the tunnel statuses.
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(statuses)
+	}
+}
+
 func main() {
 	token := os.Getenv("WEBHOOK_TOKEN")
 	if token == "" {
@@ -173,8 +224,9 @@ func main() {
 		log.Printf("Failed to load IPv6 address from file: %v. Using default (%s).", err, config.IPv6Address)
 	}
 
-	// Start the HTTP server to listen for webhook updates.
+	// Start the HTTP server to listen for webhook updates and health check.
 	http.HandleFunc("/update", updateIPv6Address(config))
+	http.HandleFunc("/health", healthCheckHandler(config))
 	go func() {
 		fullAddr := fmt.Sprintf("%s:%s", config.WebhookListenAddr, config.WebhookListenPort)
 		log.Printf("Starting webhook server on %s\n", fullAddr)
