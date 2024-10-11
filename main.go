@@ -9,19 +9,30 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 // Config holds the runtime configuration.
 type Config struct {
-	IPv6Address     string
-	IPv6Port        string
-	IPv4Port        string
-	FilePath        string
-	ConfigDir       string
-	WebhookToken    string
-	WebhookListener string
-	mu              sync.RWMutex
+	IPv6Address       string
+	IPv6Ports         []string
+	IPv4Ports         []string
+	FilePath          string
+	DataDir           string
+	WebhookToken      string
+	WebhookListenPort string
+	TunnelListenAddr  string
+	mu                sync.RWMutex
+}
+
+func parseConfigEnv(envVar string, defaultValue string) string {
+	env := os.Getenv(envVar)
+	if env == "" {
+		env = defaultValue // Default if not set
+	}
+
+	return env
 }
 
 // forward forwards traffic between the source and destination connections.
@@ -56,8 +67,8 @@ func (config *Config) saveIPv6Address() error {
 // loadIPv6Address loads the IPv6 address from a file.
 func (config *Config) loadIPv6Address() error {
 
-	// Create a config/ dir if it's not existing
-	err := os.MkdirAll(config.ConfigDir, os.ModePerm)
+	// Create a data/ dir if it's not existing to store the txt file
+	err := os.MkdirAll(config.DataDir, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -126,77 +137,81 @@ func main() {
 		log.Fatal("WEBHOOK_TOKEN environment variable not set")
 	}
 
-	ipv6DestinationPort := os.Getenv("DEST_PORT")
-	if ipv6DestinationPort == "" {
-		ipv6DestinationPort = "8080" // Default destination port if not set.
+	srcPortsEnv := parseConfigEnv("SRC_PORTS", "8080")
+	srcPorts := strings.Split(srcPortsEnv, ",")
+
+	destPortsEnv := parseConfigEnv("DEST_PORTS", "8080")
+	destPorts := strings.Split(destPortsEnv, ",")
+
+	if len(srcPorts) != len(destPorts) {
+		log.Fatalf("SRC_PORTS has a different length (%v) than DEST_PORTS (%v). Please make sure that both variables have the same amount of ports", len(srcPorts), len(destPorts))
 	}
 
-	ipv4SourcePort := os.Getenv("SRC_PORT")
-	if ipv4SourcePort == "" {
-		ipv4SourcePort = ":8080" // Default source port if not set.
-	}
+	sourceListenAddr := parseConfigEnv("SRC_LISTEN_ADDR", "0.0.0.0")
 
-	webhookListener := os.Getenv("WEBHOOK_LISTENER")
-	if webhookListener == "" {
-		webhookListener = ":8081" // Default webhook listener port.
-	}
+	webhookListener := parseConfigEnv("WEBHOOK_LISTEN_PORT", "8081")
 
-	configPath := "config" // Name of the config directory
+	dataPath := "data" // Name of the data directory
 
 	// Initial configuration.
 	config := &Config{
-		IPv6Address:     "2001:db8::1", // Default IPv6 address.
-		IPv6Port:        ipv6DestinationPort,
-		WebhookToken:    token,
-		ConfigDir:       filepath.Join(".", configPath),
-		FilePath:        filepath.Join(configPath, "ipv6_address.txt"),
-		WebhookListener: webhookListener,
-		IPv4Port:        ipv4SourcePort,
+		IPv6Address:       "2001:db8::1", // Default IPv6 address.
+		IPv4Ports:         srcPorts,
+		IPv6Ports:         destPorts,
+		WebhookToken:      token,
+		DataDir:           filepath.Join(".", dataPath),
+		FilePath:          filepath.Join(dataPath, "ipv6_address.txt"),
+		WebhookListenPort: webhookListener,
+		TunnelListenAddr:  sourceListenAddr,
 	}
 
 	// Load IPv6 address from the file if it exists.
 	if err := config.loadIPv6Address(); err != nil {
-		log.Printf("Failed to load IPv6 address from file: %v. Using default.", err)
+		log.Printf("Failed to load IPv6 address from file: %v. Using default (%s).", err, config.IPv6Address)
 	}
 
 	// Start the HTTP server to listen for webhook updates.
 	http.HandleFunc("/update", updateIPv6Address(config))
 	go func() {
-		log.Printf("Starting webhook server on %s\n", config.WebhookListener)
-		log.Fatal(http.ListenAndServe(config.WebhookListener, nil))
+		log.Printf("Starting webhook server on %s\n", config.WebhookListenPort)
+		log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", config.WebhookListenPort), nil))
 	}()
 
-	// Listen for incoming connections on the IPv4 address and port.
-	listener, err := net.Listen("tcp4", config.IPv4Port) // Listening on IPv4, specified port.
-	if err != nil {
-		log.Fatalf("Error listening on IPv4 address: %v", err)
+	for i, port := range config.IPv4Ports {
+		go func(port string) {
+			listener, err := net.Listen("tcp4", fmt.Sprintf("%s:%s", config.TunnelListenAddr, port))
+			if err != nil {
+				log.Fatalf("Error listening on IPv4 address %s port %s: %v", config.TunnelListenAddr, port, err)
+			}
+
+			defer listener.Close()
+			log.Printf("Listening on %s:%s for IPv4 connections...\n", config.TunnelListenAddr, port)
+
+			for {
+				srcConn, err := listener.Accept()
+				if err != nil {
+					log.Printf("Error accepting connection: %v", err)
+					continue
+				}
+
+				config.mu.RLock()
+				ipv6Addr := config.IPv6Address
+				// Use the destination port that is at the same index as the source port
+				ipv6Port := config.IPv6Ports[i]
+				config.mu.RUnlock()
+
+				destConn, err := net.Dial("tcp6", fmt.Sprintf("[%s]:%s", ipv6Addr, ipv6Port))
+				if err != nil {
+					log.Printf("Error dialing IPv6 address %s port %s: %v", ipv6Addr, ipv6Port, err)
+					srcConn.Close()
+					continue
+				}
+
+				go forward(srcConn, destConn)
+			}
+		}(port)
 	}
-	defer listener.Close()
-	log.Printf("Listening on %s for IPv4 connections...\n", config.IPv4Port)
 
-	for {
-		// Accept incoming connections.
-		srcConn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Error accepting connection: %v", err)
-			continue
-		}
-
-		// Get the current IPv6 address in a thread-safe way.
-		config.mu.RLock()
-		ipv6Addr := config.IPv6Address
-		port := config.IPv6Port
-		config.mu.RUnlock()
-
-		// Dial the destination IPv6 address and port.
-		dstConn, err := net.Dial("tcp6", fmt.Sprintf("[%s]:%s", ipv6Addr, port))
-		if err != nil {
-			log.Printf("Error dialing IPv6 address: %v", err)
-			srcConn.Close()
-			continue
-		}
-
-		// Forward traffic between the two connections.
-		go forward(srcConn, dstConn)
-	}
+	// Keep the main goroutine running.
+	select {}
 }
