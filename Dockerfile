@@ -14,7 +14,4 @@ ENV WEBHOOK_LISTEN_PORT=8081
 WORKDIR /app
 COPY --from=build /app/four2six four2six
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:${WEBHOOK_LISTEN_PORT}/health || exit 1
-
 CMD ["./four2six"]
