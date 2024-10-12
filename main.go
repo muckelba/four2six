@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -108,20 +109,41 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 			return
 		}
 
-		// Parse the request body.
-		var body struct {
-			IPv6Address string `json:"ipv6_address"`
-		}
-
-		err := json.NewDecoder(r.Body).Decode(&body)
-		if err != nil || body.IPv6Address == "" {
-			http.Error(w, "Invalid request", http.StatusBadRequest)
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 			return
 		}
 
+		bodyString := string(bodyBytes)
+
+		// What a wonderful regex stolen from https://stackoverflow.com/a/17871737
+		ipv6RegEx := regexp.MustCompile(`(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3,3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))`)
+		ipv6Addresses := ipv6RegEx.FindAllString(bodyString, -1)
+
+		if len(ipv6Addresses) == 0 {
+			http.Error(w, "Invalid request: the body did not contain an IPv6 address.", http.StatusBadRequest)
+			return
+		}
+
+		// Always use the first matched address
+		ipv6Address := ipv6Addresses[0]
+		log.Printf("Found an IP address in the request body: %v", ipv6Address)
+
+		// Disabled the proper JSON payload way for now because favonia/cloudflare-ddns only sends raw strings (even when they are sending a JSON content-type header)
+		// // Parse the request jsonBody.
+		// var jsonBody struct {
+		// 	IPv6Address string `json:"ipv6_address"`
+		// }
+
+		// err = json.NewDecoder(r.Body).Decode(&jsonBody)
+		// if err != nil {
+		// log.Print("Request body does not match the expected JSON format")
+		// }
+
 		// Update the IPv6 address and save to disk.
 		config.mu.Lock()
-		config.IPv6Address = body.IPv6Address
+		config.IPv6Address = ipv6Address
 		config.mu.Unlock()
 
 		err = config.saveIPv6Address()
@@ -130,7 +152,7 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 			return
 		}
 
-		logLine := fmt.Sprintf("IPv6 address updated to %s", body.IPv6Address)
+		logLine := fmt.Sprintf("IPv6 address updated to %s", ipv6Address)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, logLine)
 		log.Print(logLine)
