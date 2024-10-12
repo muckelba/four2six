@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-// Config holds the runtime configuration.
+// Config holds the runtime configuration
 type Config struct {
 	IPv6Address       string
 	IPv6Ports         []string
@@ -28,7 +28,7 @@ type Config struct {
 	mu                sync.RWMutex
 }
 
-// TunnelStatus represents the status of a tunnel.
+// TunnelStatus represents the status of a tunnel. Used for the healthcheck
 type TunnelStatus struct {
 	IPv4Port  string `json:"ipv4_port"`
 	IPv6Port  string `json:"ipv6_port"`
@@ -43,17 +43,16 @@ func parseConfigEnv(envVar string, defaultValue string) string {
 	return env
 }
 
-// forward forwards traffic between the source and destination connections.
+// Forwards traffic between the source and destination connections
 func forward(src, dst net.Conn) {
 	defer src.Close()
 	defer dst.Close()
 
-	// Use io.Copy to forward data in both directions.
+	// Use io.Copy to forward data in both directions
 	go io.Copy(src, dst)
 	io.Copy(dst, src)
 }
 
-// saveIPv6Address saves the current IPv6 address to a file.
 func (config *Config) saveIPv6Address() error {
 	config.mu.RLock()
 	defer config.mu.RUnlock()
@@ -72,7 +71,6 @@ func (config *Config) saveIPv6Address() error {
 	return nil
 }
 
-// loadIPv6Address loads the IPv6 address from a file.
 func (config *Config) loadIPv6Address() error {
 	// Create a data/ dir if it's not existing to store the txt file
 	err := os.MkdirAll(config.DataDir, os.ModePerm)
@@ -99,10 +97,10 @@ func (config *Config) loadIPv6Address() error {
 	return nil
 }
 
-// updateIPv6Address handles the webhook to update the IPv6 address.
+// Handles the webhook to update the IPv6 address
 func updateIPv6Address(config *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Check the token.
+		// Check the token
 		token := r.Header.Get("Authorization")
 		if token != fmt.Sprintf("Bearer %s", config.WebhookToken) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -123,6 +121,7 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 
 		if len(ipv6Addresses) == 0 {
 			http.Error(w, "Invalid request: the body did not contain an IPv6 address.", http.StatusBadRequest)
+			log.Printf("Did not found a valid IPv6 address in the request body: '%s'", bodyString)
 			return
 		}
 
@@ -141,7 +140,7 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 		// log.Print("Request body does not match the expected JSON format")
 		// }
 
-		// Update the IPv6 address and save to disk.
+		// Update the IPv6 address and save to disk
 		config.mu.Lock()
 		config.IPv6Address = ipv6Address
 		config.mu.Unlock()
@@ -159,7 +158,7 @@ func updateIPv6Address(config *Config) http.HandlerFunc {
 	}
 }
 
-// checkTunnel checks if a connection to the IPv6 address and port is possible.
+// Checks if a connection to the IPv6 address and port is possible
 func checkTunnel(ipv6Addr, port string) (bool, error) {
 	conn, err := net.DialTimeout("tcp6", fmt.Sprintf("[%s]:%s", ipv6Addr, port), 2*1e9) // 2 seconds timeout
 	if err != nil {
@@ -169,7 +168,7 @@ func checkTunnel(ipv6Addr, port string) (bool, error) {
 	return true, nil
 }
 
-// healthCheckHandler provides a health check for all open tunnels.
+// Provides a health check for all open tunnels
 func healthCheckHandler(config *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		config.mu.RLock()
@@ -197,7 +196,7 @@ func healthCheckHandler(config *Config) http.HandlerFunc {
 		if allHealthy {
 			w.WriteHeader(http.StatusOK) // HTTP 200 if all tunnels are healthy
 		} else {
-			w.WriteHeader(http.StatusInternalServerError) // HTTP 500 if any tunnel is down
+			w.WriteHeader(http.StatusInternalServerError) // HTTP 500 if at least one tunnel is down
 		}
 
 		// Respond with JSON containing the tunnel statuses.
@@ -229,9 +228,9 @@ func main() {
 
 	dataPath := "data" // Name of the data directory
 
-	// Initial configuration.
+	// Initial configuration
 	config := &Config{
-		IPv6Address:       "2001:db8::1", // Default IPv6 address.
+		IPv6Address:       "2001:db8::1", // Default IPv6 address
 		IPv4Ports:         srcPorts,
 		IPv6Ports:         destPorts,
 		WebhookToken:      token,
@@ -242,12 +241,12 @@ func main() {
 		TunnelListenAddr:  sourceListenAddr,
 	}
 
-	// Load IPv6 address from the file if it exists.
+	// Load IPv6 address from the file if it exists
 	if err := config.loadIPv6Address(); err != nil {
 		log.Printf("Failed to load IPv6 address from file: %v. Using default (%s).", err, config.IPv6Address)
 	}
 
-	// Start the HTTP server to listen for webhook updates and health check.
+	// Start the HTTP server to listen for webhook updates and health check
 	http.HandleFunc("/update", updateIPv6Address(config))
 	http.HandleFunc("/health", healthCheckHandler(config))
 	go func() {
@@ -291,6 +290,6 @@ func main() {
 		}(port)
 	}
 
-	// Keep the main goroutine running.
+	// Keep the main goroutine running
 	select {}
 }
