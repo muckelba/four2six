@@ -1,6 +1,13 @@
 {
     "cSpell.words": [
+        "certresolver",
         "ddns",
-        "favonia"
+        "favonia",
+        "homelab",
+        "ipam",
+        "letsencrypt",
+        "loadbalancer",
+        "muckelba",
+        "Traefik"
     ]
 }
